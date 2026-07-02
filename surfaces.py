@@ -16,20 +16,34 @@ from presidio_analyzer import AnalyzerEngine, RecognizerResult
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 
+from recognizers.ner import NER_ENTITIES
 from tokenizer import TokenMapper, escape_preexisting_tokens, unescape_tokens
 
 PseudoFn = Callable[[str], str]
 
 
 def _resolve_conflicts(results: list[RecognizerResult]) -> list[RecognizerResult]:
-    """Résolution des chevauchements : meilleur score, puis plus long match,
-    puis position, puis type (tie-break déterministe). Complète la gestion de
-    conflits de Presidio, qui laisse passer deux entités sur le même span
-    (ex. SIREN Luhn-valide aussi matché ADELI) — ce qui fausserait l'audit.
+    """Résolution des chevauchements, par priorité :
+
+    1. pattern déterministe > NER probabiliste (un email entier tagué LOCATION
+       par le NER ne doit pas voler le span à EMAIL ; « Victor Hugo » PERSON
+       ne doit pas découper « 3 bis avenue Victor Hugo » ADDRESS) ;
+    2. plus long match (brief Tier 1 : SIRET jamais SIREN + reste) ;
+    3. meilleur score (SIREN validé 1.0 > ADELI 0.45 sur le même span) ;
+    4. position puis type (tie-break déterministe).
+
+    Complète la gestion de conflits de Presidio, qui laisse passer deux
+    entités sur le même span — ce qui fausserait l'audit.
     """
     ordered = sorted(
         results,
-        key=lambda r: (-r.score, -(r.end - r.start), r.start, r.entity_type),
+        key=lambda r: (
+            r.entity_type in NER_ENTITIES,  # False (pattern) trié avant True
+            -(r.end - r.start),
+            -r.score,
+            r.start,
+            r.entity_type,
+        ),
     )
     kept: list[RecognizerResult] = []
     for result in ordered:
@@ -38,10 +52,21 @@ def _resolve_conflicts(results: list[RecognizerResult]) -> list[RecognizerResult
     return sorted(kept, key=lambda r: r.start)
 
 
-def analyze_text(analyzer: AnalyzerEngine, text: str) -> list[RecognizerResult]:
-    """Détection Tier 1 : analyse Presidio + résolution des chevauchements.
-    C'est LE point d'entrée de détection utilisé en production et en test."""
-    return _resolve_conflicts(analyzer.analyze(text=text, language="fr"))
+def analyze_text(
+    analyzer: AnalyzerEngine, text: str, ner_score_threshold: float = 0.0
+) -> list[RecognizerResult]:
+    """Détection : analyse Presidio + seuil NER + résolution des chevauchements.
+    C'est LE point d'entrée de détection utilisé en production et en test.
+
+    Le seuil ne s'applique qu'aux entités issues du NER (PERSON, LOCATION) —
+    les entités pattern (Tier 1, ADDRESS) ont leurs propres scores/validations.
+    """
+    results = [
+        r
+        for r in analyzer.analyze(text=text, language="fr")
+        if r.entity_type not in NER_ENTITIES or r.score >= ner_score_threshold
+    ]
+    return _resolve_conflicts(results)
 
 
 def make_pseudonymizer(
@@ -49,6 +74,7 @@ def make_pseudonymizer(
     anonymizer: AnonymizerEngine,
     mapper: TokenMapper,
     stats: Counter,
+    ner_score_threshold: float = 0.0,
 ) -> PseudoFn:
     """Fabrique la fonction texte→texte tokenisé pour UNE requête.
 
@@ -59,7 +85,7 @@ def make_pseudonymizer(
 
     def pseudonymize(text: str) -> str:
         text = escape_preexisting_tokens(text)
-        results = analyze_text(analyzer, text)
+        results = analyze_text(analyzer, text, ner_score_threshold)
         if not results:
             return text
         for result in results:

@@ -155,6 +155,59 @@ class TestBoucleComplete:
         assert "<<PII:NIR:1>>" in sent["system"][1]["text"]
 
 
+class TestTier2Ner:
+    PERSON = "Camille Moreau"
+    ADDRESS_VOIE = "12 rue de la Paix"
+    ADDRESS_CP = "75002 Paris"
+    VILLE = "Lyon"
+
+    def body(self) -> dict:
+        return {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 128,
+            "system": "Tu rédiges des courriers administratifs.",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Courrier pour {self.PERSON}, domiciliée "
+                    f"{self.ADDRESS_VOIE}, {self.ADDRESS_CP}. "
+                    f"Elle part à {self.VILLE} lundi.",
+                },
+            ],
+        }
+
+    def test_person_location_address_bout_en_bout(self, gateway, upstream):
+        response = gateway.post(
+            "/v1/messages", json=self.body(), headers={"x-api-key": "k"}
+        )
+        assert response.status_code == 200
+
+        sent_str = json.dumps(upstream.sent_body(), ensure_ascii=False)
+        for raw in [self.PERSON, self.ADDRESS_VOIE, self.ADDRESS_CP, self.VILLE]:
+            assert raw not in sent_str, raw
+        assert "<<PII:PERSON:1>>" in sent_str
+        assert "<<PII:ADDRESS:1>>" in sent_str
+        assert "<<PII:ADDRESS:2>>" in sent_str
+        assert "<<PII:LOCATION:1>>" in sent_str
+
+        # l'appelant récupère les valeurs réelles
+        text = response.json()["content"][0]["text"]
+        for raw in [self.PERSON, self.ADDRESS_VOIE, self.ADDRESS_CP, self.VILLE]:
+            assert raw in text, raw
+
+    def test_audit_tier2_sans_valeur(self, gateway):
+        gateway.post("/v1/messages", json=self.body(), headers={"x-api-key": "k"})
+
+        content = gateway.audit_file.read_text()
+        for raw in [self.PERSON, self.ADDRESS_VOIE, self.ADDRESS_CP, self.VILLE]:
+            assert raw not in content
+
+        entry = json.loads(content.strip().splitlines()[-1])
+        assert entry["pii_counts"]["PERSON"] == 1
+        assert entry["pii_counts"]["ADDRESS"] == 2
+        assert entry["pii_counts"]["LOCATION"] == 1
+
+
 class TestStream:
     def test_stream_true_400_propre(self, gateway, upstream):
         body = {

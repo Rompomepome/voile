@@ -1,10 +1,12 @@
-"""Construction de l'AnalyzerEngine Presidio pour le Tier 1.
+"""Construction de l'AnalyzerEngine Presidio.
 
-Le registry n'embarque QUE les recognizers pattern du Tier 1. Le NLP engine
-est un pipeline spaCy `fr` vide (les patterns n'en ont pas besoin) : pour le
-Tier 2, il suffira de remplacer `spacy.blank("fr")` par un modèle
-`fr_core_news_*` et d'ajouter les recognizers NER au registry — sans refactor.
+Tier 1 : recognizers pattern (email, tél, NIR, IBAN, RPPS/ADELI/SIREN/SIRET)
++ ADDRESS (pattern, indépendant du NER).
+Tier 2 : ENABLE_NER=true → NLP engine fr_core_news_lg + recognizer NER
+(PERSON, LOCATION). ENABLE_NER=false → pipeline spaCy vide, patterns seuls.
 """
+
+from functools import lru_cache
 
 import spacy
 from presidio_analyzer import AnalyzerEngine, RecognizerRegistry
@@ -12,8 +14,10 @@ from presidio_analyzer.nlp_engine import SpacyNlpEngine
 
 from config import Settings
 
+from .address import AddressRecognizer
 from .email import EmailRecognizer
 from .iban import IbanFrRecognizer
+from .ner import FrNerNlpEngine, build_ner_recognizer
 from .nir import NirRecognizer
 from .phone import PhoneFrRecognizer
 from .pro_ids import (
@@ -44,7 +48,11 @@ class _BlankFrNlpEngine(SpacyNlpEngine):
         self.nlp = {"fr": spacy.blank("fr")}
 
 
+@lru_cache(maxsize=8)
 def build_analyzer(settings: Settings) -> AnalyzerEngine:
+    """Settings est un dataclass frozen (hashable) : mêmes réglages → même
+    engine réutilisé. Évite de recharger fr_core_news_lg (~545 MB) à chaque
+    construction ; l'engine est sans état côté analyse."""
     registry = RecognizerRegistry(supported_languages=["fr"])
     recognizers = [
         EmailRecognizer(),
@@ -59,12 +67,19 @@ def build_analyzer(settings: Settings) -> AnalyzerEngine:
     if settings.enable_siren_siret:
         recognizers.append(SirenRecognizer())
         recognizers.append(SiretRecognizer())
+    if settings.enable_address:
+        recognizers.append(AddressRecognizer())
+    if settings.enable_ner:
+        recognizers.append(build_ner_recognizer(settings.enable_location))
+        nlp_engine = FrNerNlpEngine()
+    else:
+        nlp_engine = _BlankFrNlpEngine()
     for recognizer in recognizers:
         registry.add_recognizer(recognizer)
 
     return AnalyzerEngine(
         registry=registry,
-        nlp_engine=_BlankFrNlpEngine(),
+        nlp_engine=nlp_engine,
         supported_languages=["fr"],
         default_score_threshold=SCORE_THRESHOLD,
     )

@@ -2,6 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Modèle NER Tier 2 (~545 MB) : layer séparé, mis en cache indépendamment
+# des changements de requirements.txt.
+RUN pip install --no-cache-dir \
+    https://github.com/explosion/spacy-models/releases/download/fr_core_news_lg-3.8.0/fr_core_news_lg-3.8.0-py3-none-any.whl
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

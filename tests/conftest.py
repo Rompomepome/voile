@@ -12,12 +12,18 @@ from recognizers import build_analyzer
 
 
 def make_settings(**overrides) -> Settings:
+    """Défauts TEST : Tier 2 (NER/ADDRESS) désactivé, contrairement à la prod —
+    les tests Tier 1 restent purs ; les tests Tier 2 activent explicitement."""
     defaults = dict(
         anthropic_api_key=None,
         upstream_base_url="https://upstream.test",
         enable_rpps=True,
         enable_adeli=True,
         enable_siren_siret=True,
+        enable_ner=False,
+        enable_location=False,
+        enable_address=False,
+        ner_score_threshold=0.4,
         upstream_timeout_s=5.0,
         port=8080,
         audit_log_file=None,
@@ -28,8 +34,16 @@ def make_settings(**overrides) -> Settings:
 
 @pytest.fixture(scope="session")
 def analyzer():
-    """Analyzer avec tous les recognizers Tier 1 activés."""
+    """Analyzer avec tous les recognizers Tier 1 activés (NER off)."""
     return build_analyzer(make_settings())
+
+
+@pytest.fixture(scope="session")
+def analyzer_ner():
+    """Analyzer complet Tier 1 + Tier 2 (NER, LOCATION, ADDRESS)."""
+    return build_analyzer(
+        make_settings(enable_ner=True, enable_location=True, enable_address=True)
+    )
 
 
 def _collect_texts(body: dict) -> list[str]:

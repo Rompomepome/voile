@@ -89,7 +89,11 @@ async def messages(request: Request) -> Response:
     mapper = TokenMapper()
     stats: Counter = Counter()
     pseudonymize = make_pseudonymizer(
-        request.app.state.analyzer, request.app.state.anonymizer, mapper, stats
+        request.app.state.analyzer,
+        request.app.state.anonymizer,
+        mapper,
+        stats,
+        ner_score_threshold=settings.ner_score_threshold,
     )
     safe_body = pseudonymize_request(body, pseudonymize)
 
